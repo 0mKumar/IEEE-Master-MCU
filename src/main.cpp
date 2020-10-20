@@ -6,44 +6,209 @@
 //const char* ssid = "Om Kumar";
 //const char* password = "ppppuuurrrry";
 
-unsigned long StartTime, CurrentTime, ElapsedTime;
+unsigned long startTime, elapsedTime;
 bool flag = false;
-int MoistureValue = -1;
+int moistureValue = -1;
 RH_NRF24 nrf24(2, 4);
 
-void printSensorValue(uint8_t arr[]) {
-    int moisture = arr[0];
-    unsigned long dht_temp_b =
-            ((arr[4] & 0xff) << 24) | ((arr[3] & 0xff) << 16) | ((arr[2] & 0xff) << 8) | (arr[1] & 0xff);
-    unsigned long humidity_b =
-            ((arr[8] & 0xff) << 24) | ((arr[7] & 0xff) << 16) | ((arr[6] & 0xff) << 8) | (arr[5] & 0xff);
-    unsigned long soil_temp_b =
-            ((arr[12] & 0xff) << 24) | ((arr[11] & 0xff) << 16) | ((arr[10] & 0xff) << 8) | (arr[9] & 0xff);
-    float dht_temp = *(float *) &dht_temp_b;
-    float humidity = *(float *) &humidity_b;
-    float soil_temp = *(float *) &soil_temp_b;
-    Serial.print(moisture);
-    Serial.print(" ");
-    Serial.print(dht_temp);
-    Serial.print(" ");
-    Serial.print(humidity);
-    Serial.print(" ");
-    Serial.println(soil_temp);
+#define PACKET_TYPE_SENSOR_DATA 1
+#define PACKET_TYPE_MESSAGE 2
+#define PACKET_TYPE_RESPONSE 3
+#define PACKET_TYPE_INSTRUCTION 4
+
+#define INSTRUCTION_SEND_SENSOR_DATA 1
+#define INSTRUCTION_OPEN_VALVE 2
+#define INSTRUCTION_CLOSE_VALVE 3
+
+#define RESPONSE_OPENED_VALVE 5
+#define RESPONSE_CLOSED_VALVE 6
+
+void reInitialiseNRF() {
+    if (!nrf24.init())
+        Serial.println("initialization failed");
+    if (!nrf24.setChannel(5))
+        Serial.println("Channel set failed");
+    if (!nrf24.setRF(RH_NRF24::DataRate250kbps, RH_NRF24::TransmitPower0dBm))
+        Serial.println("RF set failed");
+    nrf24.setModeRx();
+}
+
+union DataPacket {
+    struct {
+        int packet_type;
+        union {
+            struct {
+                int moisture_percent;
+                float atmospheric_temperature;
+                float humidity;
+                float soil_temperature;
+
+                void print() const {
+                    Serial.print(F("Sensor Data | "));
+                    Serial.print(F("moisture : "));
+                    Serial.print(moisture_percent);
+                    Serial.print(F(" %\t atm_temp : "));
+                    Serial.print(atmospheric_temperature);
+                    Serial.print(F(" C\t humidity : "));
+                    Serial.print(humidity);
+                    Serial.print(F(" \t soil_temp : "));
+                    Serial.print(soil_temperature);
+                    Serial.println(F(" C"));
+                }
+            } sensor;
+
+            struct {
+                int code;
+                char text[RH_NRF24_MAX_MESSAGE_LEN - 8];
+
+                void print() {
+                    Serial.print(F("Response "));
+                    Serial.print(code);
+                    Serial.print(F(" | "));
+                    Serial.println(text);
+                }
+            } response;
+
+            struct {
+                int code;
+                char text[RH_NRF24_MAX_MESSAGE_LEN - 8];
+
+                void print() {
+                    Serial.print(F("Instruction "));
+                    Serial.print(code);
+                    Serial.print(F(" | "));
+                    Serial.println(text);
+                }
+            } instruction;
+
+            char message[RH_NRF24_MAX_MESSAGE_LEN - 4];
+        } data;
+
+        void print() {
+            switch (packet_type) {
+                case PACKET_TYPE_SENSOR_DATA:
+                    data.sensor.print();
+                    break;
+                case PACKET_TYPE_MESSAGE:
+                    Serial.print(F("Slave >> "));
+                    Serial.println(data.message);
+                    break;
+                case PACKET_TYPE_RESPONSE:
+                    data.response.print();
+                    break;
+                case PACKET_TYPE_INSTRUCTION:
+                    data.instruction.print();
+                    break;
+            }
+        }
+    } packet;
+
+    byte bytes[RH_NRF24_MAX_MESSAGE_LEN];
+};
+
+void sendData(uint8_t *bytes, byte length) {
+    Serial.println("Sending data...");
+    for (byte i = 0; i < length; i++) {
+        Serial.print(bytes[i]);
+        Serial.print(" ");
+    }
+    Serial.println();
+    nrf24.setModeTx();
+    nrf24.send(bytes, length);
+    if (!nrf24.waitPacketSent()) {
+        Serial.println(F("Transmission Failed!!"));
+        reInitialiseNRF();
+    }
+    nrf24.setModeRx();
+}
+
+void sendMessage(String text) {
+    Serial.println(text);
+    startTime = millis();
+
+    DataPacket packet{{PACKET_TYPE_MESSAGE}};
+    memcpy(packet.packet.data.message, text.begin(), sizeof(text));
+
+    Serial.println("Sending message");
+    packet.packet.print();
+
+    sendData(packet.bytes, sizeof(packet.bytes));
+}
+
+void sendResponse(int responseCode, String text) {
+    Serial.println(text);
+    startTime = millis();
+
+    DataPacket packet{{PACKET_TYPE_RESPONSE}};
+    packet.packet.data.response.code = responseCode;
+
+    memcpy(packet.packet.data.response.text, text.begin(), sizeof(text));
+
+    Serial.println("Sending response");
+    packet.packet.print();
+
+    sendData(packet.bytes, sizeof(packet.bytes));
+}
+
+void sendInstruction(int instructionCode, String text) {
+    Serial.println(text);
+    startTime = millis();
+
+    DataPacket packet{{PACKET_TYPE_INSTRUCTION}};
+    packet.packet.data.instruction.code = instructionCode;
+    memcpy(packet.packet.data.response.text, text.begin(), sizeof(text));
+
+    Serial.println("Sending Instruction");
+    packet.packet.print();
+
+    sendData(packet.bytes, sizeof(packet.bytes));
+}
+
+void readAndConsumeDataPacket() {
+    DataPacket dataPacket{};
+    uint8_t len = sizeof(dataPacket.bytes);
+    if (nrf24.recv(dataPacket.bytes, &len)) {
+        dataPacket.packet.print();
+        for (int i = 0; i < len; i++) {
+            Serial.print(dataPacket.bytes[i]);
+            Serial.print(" ");
+        }
+        Serial.println();
+        switch (dataPacket.packet.packet_type) {
+            case PACKET_TYPE_INSTRUCTION:
+                break;
+            case PACKET_TYPE_RESPONSE: {
+                switch (dataPacket.packet.data.response.code) {
+                    case RESPONSE_CLOSED_VALVE:
+                        moistureValue = -1;
+                        break;
+                    case RESPONSE_OPENED_VALVE:
+                        moistureValue = -1;
+                        break;
+                    default:
+                        Serial.println("Unknown response received");
+                }
+                break;
+            }
+            case PACKET_TYPE_SENSOR_DATA: {
+//                dataPacket.packet.data.sensor.print();
+                moistureValue = dataPacket.packet.data.sensor.moisture_percent;
+            }
+        }
+    } else {
+        Serial.println(F("Receive failed"));
+    }
 }
 
 void setup() {
     Serial.begin(9600);
     while (!Serial);
-    Serial.println("Hello");
 
-    if (!nrf24.init())
-        Serial.println("initialization failed");
-    if (!nrf24.setChannel(5))
-        Serial.println("Channel set failed");
-    if (!nrf24.setRF(RH_NRF24::DataRate2Mbps, RH_NRF24::TransmitPower0dBm))
-        Serial.println("RF set failed");
+    reInitialiseNRF();
 
     Serial.setDebugOutput(true);
+
+    WiFi.mode(WIFI_OFF);
 //
 //  WiFi.mode(WIFI_STA);
 //  WiFi.begin(ssid, password);
@@ -55,62 +220,29 @@ void setup() {
 }
 
 void loop() {
-    if (flag == false) {
-        String data = "";
-        if (MoistureValue == -1)
-            data = String("Attempt to connect ");
-        else {
-            if (MoistureValue < 80)
-                data = String("Open Valve ");
-            else
-                data = String("Close Valve ");
-        }
-        Serial.println(data);
-        uint8_t dataArray[data.length()];
-        data.getBytes(dataArray, data.length());
-        nrf24.send(dataArray, sizeof(dataArray));
-        nrf24.waitPacketSent();
-        flag = true;
-        StartTime = millis();
-    }
-    //Serial.println(flag);
     if (nrf24.available()) {
-        String str1 = "Valve Opened", str2 = "Valve Closed";
-        bool openedvalve = true, closedvalve = true;
-        uint8_t buf[RH_NRF24_MAX_MESSAGE_LEN];
-        uint8_t len = sizeof(buf);
-        if (nrf24.recv(buf, &len)) {
-            for (int i = 0; i < str1.length(); i++) {
-                if (str1[i] != buf[i]) {
-                    openedvalve = false;
-                    break;
-                }
-            }
-
-            for (int i = 0; i < str2.length(); i++) {
-                if (str2[i] != buf[i]) {
-                    closedvalve = false;
-                    break;
-                }
-            }
-
-            if (openedvalve == false && closedvalve == false) {
-                Serial.print(
-                        "Soil Mositure Percent, Atmospheric Temperature, Atmospheric Humidity, Soil Temperature : ");
-                printSensorValue(buf);
-                MoistureValue = (int) buf[0];
-            } else {
-                Serial.println((char *) buf);
-                MoistureValue = -1;
-            }
-            flag = false;
-        } else {
-            Serial.println("recv failed");
-        }
+        readAndConsumeDataPacket();
     }
 
-    CurrentTime = millis();
-    ElapsedTime = CurrentTime - StartTime;
-    if (ElapsedTime > 10000)
+    if (flag == false) {
+        if (moistureValue == -1) {
+            sendInstruction(INSTRUCTION_SEND_SENSOR_DATA, "Send sensor data");
+            nrf24.waitAvailableTimeout(10000);
+        } else {
+            if (moistureValue < 80) {
+                sendInstruction(INSTRUCTION_OPEN_VALVE, "Open the valve");
+                nrf24.waitAvailableTimeout(3000);
+            } else {
+                sendInstruction(INSTRUCTION_CLOSE_VALVE, "Close the valve");
+                nrf24.waitAvailableTimeout(3000);
+            }
+        }
+        flag = true;
+        startTime = millis();
+    }
+
+    elapsedTime = millis() - startTime;
+    if (elapsedTime > 15000) {
         flag = false;
+    }
 }
