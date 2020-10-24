@@ -7,7 +7,6 @@
 //const char* password = "ppppuuurrrry";
 
 unsigned long startTime, elapsedTime;
-bool flag = false;
 int moistureValue = -1;
 RH_NRF24 nrf24(2, 4);
 
@@ -23,12 +22,14 @@ RH_NRF24 nrf24(2, 4);
 #define RESPONSE_OPENED_VALVE 5
 #define RESPONSE_CLOSED_VALVE 6
 
+unsigned int counter = 0;
+
 void reInitialiseNRF() {
     if (!nrf24.init())
         Serial.println("initialization failed");
     if (!nrf24.setChannel(5))
         Serial.println("Channel set failed");
-    if (!nrf24.setRF(RH_NRF24::DataRate250kbps, RH_NRF24::TransmitPower0dBm))
+    if (!nrf24.setRF(RH_NRF24::DataRate2Mbps, RH_NRF24::TransmitPowerm18dBm))
         Serial.println("RF set failed");
     nrf24.setModeRx();
 }
@@ -36,6 +37,7 @@ void reInitialiseNRF() {
 union DataPacket {
     struct {
         int packet_type;
+        unsigned int id;
         union {
             struct {
                 int moisture_percent;
@@ -59,7 +61,7 @@ union DataPacket {
 
             struct {
                 int code;
-                char text[RH_NRF24_MAX_MESSAGE_LEN - 8];
+                char text[RH_NRF24_MAX_MESSAGE_LEN - 12];
 
                 void print() {
                     Serial.print(F("Response "));
@@ -71,7 +73,7 @@ union DataPacket {
 
             struct {
                 int code;
-                char text[RH_NRF24_MAX_MESSAGE_LEN - 8];
+                char text[RH_NRF24_MAX_MESSAGE_LEN - 12];
 
                 void print() {
                     Serial.print(F("Instruction "));
@@ -81,10 +83,13 @@ union DataPacket {
                 }
             } instruction;
 
-            char message[RH_NRF24_MAX_MESSAGE_LEN - 4];
+            char message[RH_NRF24_MAX_MESSAGE_LEN - 8];
         } data;
 
         void print() {
+            Serial.print("#");
+            Serial.print(id);
+            Serial.print(": ");
             switch (packet_type) {
                 case PACKET_TYPE_SENSOR_DATA:
                     data.sensor.print();
@@ -122,11 +127,15 @@ void sendData(uint8_t *bytes, byte length) {
     nrf24.setModeRx();
 }
 
+DataPacket createDataPacket(int type) {
+    DataPacket packet{{type}};
+    packet.packet.id = counter++;
+    return packet;
+}
+
 void sendMessage(String text) {
     Serial.println(text);
-    startTime = millis();
-
-    DataPacket packet{{PACKET_TYPE_MESSAGE}};
+    DataPacket packet = createDataPacket(PACKET_TYPE_MESSAGE);
     memcpy(packet.packet.data.message, text.begin(), sizeof(text));
 
     Serial.println("Sending message");
@@ -137,9 +146,7 @@ void sendMessage(String text) {
 
 void sendResponse(int responseCode, String text) {
     Serial.println(text);
-    startTime = millis();
-
-    DataPacket packet{{PACKET_TYPE_RESPONSE}};
+    DataPacket packet = createDataPacket(PACKET_TYPE_RESPONSE);
     packet.packet.data.response.code = responseCode;
 
     memcpy(packet.packet.data.response.text, text.begin(), sizeof(text));
@@ -152,9 +159,7 @@ void sendResponse(int responseCode, String text) {
 
 void sendInstruction(int instructionCode, String text) {
     Serial.println(text);
-    startTime = millis();
-
-    DataPacket packet{{PACKET_TYPE_INSTRUCTION}};
+    DataPacket packet = createDataPacket(PACKET_TYPE_INSTRUCTION);
     packet.packet.data.instruction.code = instructionCode;
     memcpy(packet.packet.data.response.text, text.begin(), sizeof(text));
 
@@ -193,6 +198,11 @@ void readAndConsumeDataPacket() {
             case PACKET_TYPE_SENSOR_DATA: {
 //                dataPacket.packet.data.sensor.print();
                 moistureValue = dataPacket.packet.data.sensor.moisture_percent;
+                if (moistureValue < 80) {
+                    sendInstruction(INSTRUCTION_OPEN_VALVE, "Open the valve");
+                } else {
+                    sendInstruction(INSTRUCTION_CLOSE_VALVE, "Close the valve");
+                }
             }
         }
     } else {
@@ -220,29 +230,13 @@ void setup() {
 }
 
 void loop() {
-    if (nrf24.available()) {
+    while (nrf24.available()) {
         readAndConsumeDataPacket();
-    }
-
-    if (flag == false) {
-        if (moistureValue == -1) {
-            sendInstruction(INSTRUCTION_SEND_SENSOR_DATA, "Send sensor data");
-            nrf24.waitAvailableTimeout(10000);
-        } else {
-            if (moistureValue < 80) {
-                sendInstruction(INSTRUCTION_OPEN_VALVE, "Open the valve");
-                nrf24.waitAvailableTimeout(3000);
-            } else {
-                sendInstruction(INSTRUCTION_CLOSE_VALVE, "Close the valve");
-                nrf24.waitAvailableTimeout(3000);
-            }
-        }
-        flag = true;
-        startTime = millis();
     }
 
     elapsedTime = millis() - startTime;
     if (elapsedTime > 15000) {
-        flag = false;
+        sendInstruction(INSTRUCTION_SEND_SENSOR_DATA, "Send sensor data");
+        startTime = millis();
     }
 }
