@@ -118,7 +118,6 @@ void sendData(uint8_t *bytes, byte length) {
         Serial.print(" ");
     }
     Serial.println();
-    nrf24.setModeTx();
     nrf24.send(bytes, length);
     if (!nrf24.waitPacketSent()) {
         Serial.println(F("Transmission Failed!!"));
@@ -235,7 +234,7 @@ void loop() {
     }
 
     elapsedTime = millis() - startTime;
-    if (elapsedTime > 15000) {
+    if (elapsedTime > 30000) {
         sendInstruction(INSTRUCTION_SEND_SENSOR_DATA, "Send sensor data");
         startTime = millis();
     }
