@@ -32,9 +32,16 @@ unsigned int counter = 0;
 void reInitialiseNRF() {
     if (!manager.init())
         Serial.println("init failed");
+    driver.setChannel(2);
     manager.setRetries(10);
     manager.setTimeout(300);
 }
+
+struct Slave {
+    uint8_t address;
+    unsigned long lastRespondedAt;
+
+};
 
 union DataPacket {
     struct {
@@ -125,7 +132,7 @@ void readAndConsumeDataPacket() {
     if (manager.recvfromAckTimeout(dataPacket.bytes, &len, 4000, &from)) {
         dataPacket.packet.print();
         for (int i = 0; i < len; i++) {
-            Serial.print(dataPacket.bytes[i]);
+            Serial.print(dataPacket.bytes[i], HEX);
             Serial.print(" ");
         }
         Serial.println();
@@ -164,7 +171,7 @@ void sendData(uint8_t *bytes, byte length, uint8_t to) {
     Serial.print("Sending data to ");
     Serial.println(to, HEX);
     for (byte i = 0; i < length; i++) {
-        Serial.print(bytes[i]);
+        Serial.print(bytes[i], HEX);
         Serial.print(" ");
     }
     Serial.println();
@@ -237,7 +244,7 @@ void setup() {
 }
 
 unsigned long currentStateSince = millis();
-unsigned long  elapsedTime;
+unsigned long elapsedTime;
 
 #define STATE_PREPARE_SENSOR_DATA 1
 #define STATE_IDLE_FOR_SENSOR_DATA 2
@@ -245,24 +252,27 @@ unsigned long  elapsedTime;
 
 int state = STATE_PREPARE_SENSOR_DATA;
 
+#define NUMBER_OF_SLAVES 3
+#define ADDRESS_SLAVE_1 1
+
 void loop() {
     elapsedTime = millis() - currentStateSince;
     switch (state) {
         case STATE_PREPARE_SENSOR_DATA:
-            for(int to = 1; to <= 3; to++){
+            for (int to = ADDRESS_SLAVE_1; to <= NUMBER_OF_SLAVES; to++) {
                 sendInstruction(INSTRUCTION_PREPARE_SENSOR_DATA, "Prepare sensor data", to);
             }
             state = STATE_IDLE_FOR_SENSOR_DATA;
             currentStateSince = millis();
             break;
         case STATE_IDLE_FOR_SENSOR_DATA:
-            if(elapsedTime > 6000){
+            if (elapsedTime > 5000) {
                 state = STATE_SEND_SENSOR_DATA;
                 currentStateSince = millis();
             }
             break;
         case STATE_SEND_SENSOR_DATA:
-            for(int to = 1; to <= 3; to++){
+            for (int to = ADDRESS_SLAVE_1; to <= NUMBER_OF_SLAVES; to++) {
                 sendInstruction(INSTRUCTION_SEND_SENSOR_DATA, "Send sensor data", to);
             }
             state = STATE_PREPARE_SENSOR_DATA;
