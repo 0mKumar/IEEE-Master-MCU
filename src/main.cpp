@@ -3,10 +3,18 @@
 #include <RHReliableDatagram.h>
 #include <RH_NRF24.h>
 
+#include <Hash.h>
+#include <ESPAsyncTCP.h>
+#include <ESPAsyncWebServer.h>
+#include "ArduinoJson.h"
+
 #define THIS_ADDRESS 128
 
-//const char* ssid = "Om Kumar";
-//const char* password = "ppppuuurrrry";
+const char *ssid = "ESP8266-Access-Point";
+const char *password = "123456789";
+
+// Create AsyncWebServer object on port 80
+AsyncWebServer server(80);
 
 int moistureValue = -1;
 RH_NRF24 driver(2, 4);
@@ -27,6 +35,9 @@ RHReliableDatagram manager(driver, THIS_ADDRESS);
 #define RESPONSE_OPENED_VALVE 5
 #define RESPONSE_CLOSED_VALVE 6
 
+#define NUMBER_OF_SLAVES 3
+#define ADDRESS_SLAVE_1 1
+
 unsigned int counter = 0;
 
 void reInitialiseNRF() {
@@ -36,12 +47,6 @@ void reInitialiseNRF() {
     manager.setRetries(10);
     manager.setTimeout(300);
 }
-
-struct Slave {
-    uint8_t address;
-    unsigned long lastRespondedAt;
-
-};
 
 union DataPacket {
     struct {
@@ -123,6 +128,14 @@ union DataPacket {
     byte bytes[RH_NRF24_MAX_MESSAGE_LEN];
 };
 
+struct Slave {
+    uint8_t address;
+    unsigned long lastRespondedAt;
+    DataPacket sensor;
+};
+
+Slave slaves[NUMBER_OF_SLAVES];
+
 void sendInstruction(int instructionCode, String text, uint8_t to);
 
 void readAndConsumeDataPacket() {
@@ -130,6 +143,8 @@ void readAndConsumeDataPacket() {
     uint8_t len = sizeof(dataPacket.bytes);
     uint8_t from;
     if (manager.recvfromAckTimeout(dataPacket.bytes, &len, 4000, &from)) {
+        Slave &slave = slaves[from - 1];
+        slave.lastRespondedAt = millis();
         dataPacket.packet.print();
         for (int i = 0; i < len; i++) {
             Serial.print(dataPacket.bytes[i], HEX);
@@ -153,6 +168,8 @@ void readAndConsumeDataPacket() {
                 break;
             }
             case PACKET_TYPE_SENSOR_DATA: {
+                memcpy(slave.sensor.bytes, dataPacket.bytes, sizeof(dataPacket.bytes));
+                slave.address = from;
 //                dataPacket.packet.data.sensor.print();
                 moistureValue = dataPacket.packet.data.sensor.moisture_percent;
                 if (moistureValue < 80) {
@@ -232,15 +249,45 @@ void setup() {
 
     Serial.setDebugOutput(true);
 
-    WiFi.mode(WIFI_OFF);
-//
-//  WiFi.mode(WIFI_STA);
-//  WiFi.begin(ssid, password);
-//  Serial.println("\nConnecting to WiFi");
-//  while (WiFi.status() != WL_CONNECTED) {
-//    Serial.print(".");
-//    delay(1000);
-//  }
+    WiFi.softAP(ssid, password);
+    IPAddress IP = WiFi.softAPIP();
+    Serial.print("AP IP address: ");
+    Serial.println(IP);
+
+    // Print ESP8266 Local IP Address
+    Serial.println(WiFi.localIP());
+
+    server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
+        request->send_P(200, "text/plain", "Hello from master!");
+    });
+    server.on("/slave_sensor", HTTP_POST, [](AsyncWebServerRequest *request) {
+        if (request->hasArg("slave_id")) {
+            String slaveId = request->arg("slave_id");
+            byte id = (byte) slaveId.toInt();
+            if (id >= ADDRESS_SLAVE_1 && id < ADDRESS_SLAVE_1 + NUMBER_OF_SLAVES) {
+                const size_t capacity = JSON_OBJECT_SIZE(5);
+                DynamicJsonDocument doc(capacity);
+
+                Slave &slave = slaves[id - 1];
+                doc["sid"] = id;
+                doc["at"] = slave.sensor.packet.data.sensor.atmospheric_temperature;
+                doc["ah"] = slave.sensor.packet.data.sensor.humidity;
+                doc["sm"] = slave.sensor.packet.data.sensor.moisture_percent;
+                doc["st"] = slave.sensor.packet.data.sensor.soil_temperature;
+
+                char buffer[256];
+                serializeJson(doc, buffer);
+                request->send_P(200, "text/plain", buffer);
+            } else {
+                request->send_P(301, "text/plain", "bad request: slave with given slave_id does not exist");
+            }
+        } else {
+            request->send_P(300, "text/plain", "bad request: slave_id parameter not supplied");
+        }
+    });
+
+    // Start server
+    server.begin();
 }
 
 unsigned long currentStateSince = millis();
@@ -251,9 +298,6 @@ unsigned long elapsedTime;
 #define STATE_SEND_SENSOR_DATA 3
 
 int state = STATE_PREPARE_SENSOR_DATA;
-
-#define NUMBER_OF_SLAVES 3
-#define ADDRESS_SLAVE_1 1
 
 void loop() {
     elapsedTime = millis() - currentStateSince;
