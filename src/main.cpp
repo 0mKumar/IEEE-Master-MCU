@@ -128,10 +128,20 @@ union DataPacket {
     byte bytes[RH_NRF24_MAX_MESSAGE_LEN];
 };
 
+#define VALVE_STATE_UNKNOWN 0
+#define VALVE_STATE_OPEN 2
+#define VALVE_STATE_CLOSE 3
+
 struct Slave {
-    uint8_t address;
-    unsigned long lastRespondedAt;
-    DataPacket sensor;
+    uint8_t address{};
+    unsigned long lastRespondedAt = 0;
+    unsigned long lastCommunicationTryAt = 0;
+    DataPacket sensor{};
+    uint8_t valveState = VALVE_STATE_UNKNOWN;
+
+    bool isConnected() const {
+        return lastRespondedAt > lastCommunicationTryAt;
+    }
 };
 
 Slave slaves[NUMBER_OF_SLAVES];
@@ -192,9 +202,10 @@ void sendData(uint8_t *bytes, byte length, uint8_t to) {
         Serial.print(" ");
     }
     Serial.println();
+    slaves[to - 1].lastCommunicationTryAt = millis();
     if (manager.sendtoWait(bytes, length, to)) {
         readAndConsumeDataPacket();
-    }else{
+    } else {
         Serial.println(F("sendtoWait Failed!!"));
     }
 }
@@ -260,6 +271,7 @@ void setup() {
     server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
         request->send_P(200, "text/plain", "Hello from master!");
     });
+
     server.on("/slave_sensor", HTTP_POST, [](AsyncWebServerRequest *request) {
         if (request->hasArg("slave_id")) {
             String slaveId = request->arg("slave_id");
@@ -277,12 +289,66 @@ void setup() {
 
                 char buffer[256];
                 serializeJson(doc, buffer);
-                request->send_P(200, "text/plain", buffer);
+                request->send_P(200, "application/json", buffer);
             } else {
-                request->send_P(301, "text/plain", "bad request: slave with given slave_id does not exist");
+                request->send_P(300, "application/json", "bad request: slave with given slave_id does not exist");
             }
         } else {
-            request->send_P(300, "text/plain", "bad request: slave_id parameter not supplied");
+            request->send_P(300, "application/json", "bad request: slave id not provided");
+        }
+    });
+
+    server.on("/valve", HTTP_POST, [](AsyncWebServerRequest *request) {
+        if (request->hasArg("slave_id") && request->hasArg("new_state")) {
+            String slaveId = request->arg("slave_id");
+            String newValveState = request->arg("new_state");
+            byte id = (byte) slaveId.toInt();
+            if (id >= ADDRESS_SLAVE_1 && id < ADDRESS_SLAVE_1 + NUMBER_OF_SLAVES) {
+
+                if (newValveState == "open") {
+                    sendInstruction(INSTRUCTION_OPEN_VALVE, "App request open", id);
+                } else if (newValveState == "close") {
+                    sendInstruction(INSTRUCTION_CLOSE_VALVE, "App request close", id);
+                }
+
+                const size_t capacity = JSON_OBJECT_SIZE(2);
+                DynamicJsonDocument doc(capacity);
+
+                doc["sid"] = id;
+                doc["ac"] = "OK";
+
+                char buffer[256];
+                serializeJson(doc, buffer);
+                request->send_P(200, "application/json", buffer);
+            } else {
+                request->send_P(300, "text/plain", "bad request: slave with given slave_id does not exist");
+            }
+        } else {
+            request->send_P(300, "text/plain", "bad request: slave_id or new_state not provided");
+        }
+    });
+
+    server.on("/motor", HTTP_POST, [](AsyncWebServerRequest *request) {
+        if (request->hasArg("power")) {
+            String power = request->arg("power");
+
+            if (power == "on") {
+
+            } else if (power == "off") {
+
+            }
+
+            const size_t capacity = JSON_OBJECT_SIZE(1);
+            DynamicJsonDocument doc(capacity);
+
+            doc["ac"] = "OK";
+
+            char buffer[256];
+            serializeJson(doc, buffer);
+            request->send_P(200, "application/json", buffer);
+
+        } else {
+            request->send_P(300, "text/plain", "bad request: slave_id or new_state not provided");
         }
     });
 
@@ -323,5 +389,4 @@ void loop() {
             currentStateSince = millis();
             break;
     }
-    delay(100);
 }
