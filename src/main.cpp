@@ -43,15 +43,20 @@ unsigned int counter = 0;
 void reInitialiseNRF() {
     if (!manager.init())
         Serial.println("init failed");
-    driver.setChannel(2);
-    manager.setRetries(10);
-    manager.setTimeout(300);
+    if (!driver.setRF(RH_NRF24::DataRate250kbps, RH_NRF24::TransmitPower0dBm)) {
+        Serial.println("rf set failed");
+    }
+    driver.setChannel(96);
+    manager.setRetries(20);
+    manager.setTimeout(200);
 }
+
+#define DATA_PACKET_MAX_LENGTH 20
 
 union DataPacket {
     struct {
         int packet_type;
-        unsigned int id;
+//        unsigned int id;
         union {
             struct {
                 int moisture_percent;
@@ -75,35 +80,53 @@ union DataPacket {
 
             struct {
                 int code;
-                char text[RH_NRF24_MAX_MESSAGE_LEN - 12];
 
                 void print() {
                     Serial.print(F("Response "));
                     Serial.print(code);
                     Serial.print(F(" | "));
-                    Serial.println(text);
+                    switch (code) {
+                        case RESPONSE_CLOSED_VALVE:
+                            Serial.println(F("RESPONSE_CLOSED_VALVE"));
+                            break;
+                        case RESPONSE_OPENED_VALVE:
+                            Serial.println(F("RESPONSE_OPENED_VALVE"));
+                            break;
+                    }
                 }
             } response;
 
             struct {
                 int code;
-                char text[RH_NRF24_MAX_MESSAGE_LEN - 12];
 
                 void print() {
                     Serial.print(F("Instruction "));
                     Serial.print(code);
                     Serial.print(F(" | "));
-                    Serial.println(text);
+                    switch (code) {
+                        case INSTRUCTION_OPEN_VALVE:
+                            Serial.println(F("INSTRUCTION_OPEN_VALVE"));
+                            break;
+                        case INSTRUCTION_CLOSE_VALVE:
+                            Serial.println(F("INSTRUCTION_CLOSE_VALVE"));
+                            break;
+                        case INSTRUCTION_SEND_SENSOR_DATA:
+                            Serial.println(F("INSTRUCTION_SEND_SENSOR_DATA"));
+                            break;
+                        case INSTRUCTION_PREPARE_SENSOR_DATA:
+                            Serial.println(F("INSTRUCTION_PREPARE_SENSOR_DATA"));
+                            break;
+                    }
                 }
             } instruction;
 
-            char message[RH_NRF24_MAX_MESSAGE_LEN - 8];
+            char message[DATA_PACKET_MAX_LENGTH - 4];
         } data;
 
         void print() {
-            Serial.print("#");
-            Serial.print(id);
-            Serial.print(": ");
+//            Serial.print("#");
+//            Serial.print(id);
+//            Serial.print(": ");
             switch (packet_type) {
                 case PACKET_TYPE_SENSOR_DATA:
                     data.sensor.print();
@@ -125,7 +148,7 @@ union DataPacket {
         }
     } packet;
 
-    byte bytes[RH_NRF24_MAX_MESSAGE_LEN];
+    byte bytes[DATA_PACKET_MAX_LENGTH];
 };
 
 #define VALVE_STATE_UNKNOWN 0
@@ -140,7 +163,7 @@ struct Slave {
     uint8_t valveState = VALVE_STATE_UNKNOWN;
 
     bool isConnected() const {
-        return lastRespondedAt > lastCommunicationTryAt;
+        return lastRespondedAt - lastCommunicationTryAt < 4000;
     }
 };
 
@@ -212,44 +235,44 @@ void sendData(uint8_t *bytes, byte length, uint8_t to) {
 
 DataPacket createDataPacket(int type) {
     DataPacket packet{{type}};
-    packet.packet.id = counter++;
+//    packet.packet.id = counter++;
     return packet;
 }
 
-void sendMessage(String text, uint8_t to) {
-    Serial.println(text);
-    DataPacket packet = createDataPacket(PACKET_TYPE_MESSAGE);
-    memcpy(packet.packet.data.message, text.begin(), sizeof(text));
+//void sendMessage(String text, uint8_t to) {
+//    Serial.println(text);
+//    DataPacket packet = createDataPacket(PACKET_TYPE_MESSAGE);
+//    memcpy(packet.packet.data.message, text.begin(), sizeof(text));
+//
+//    Serial.println("Sending message");
+//    packet.packet.print();
+//
+//    sendData(packet.bytes, sizeof(packet.bytes), to);
+//}
 
-    Serial.println("Sending message");
-    packet.packet.print();
-
-    sendData(packet.bytes, sizeof(packet.bytes), to);
-}
-
-void sendResponse(int responseCode, String text, uint8_t to) {
-    Serial.println(text);
-    DataPacket packet = createDataPacket(PACKET_TYPE_RESPONSE);
-    packet.packet.data.response.code = responseCode;
-
-    memcpy(packet.packet.data.response.text, text.begin(), sizeof(text));
-
-    Serial.println("Sending response");
-    packet.packet.print();
-
-    sendData(packet.bytes, sizeof(packet.bytes), to);
-}
+//void sendResponse(int responseCode, String text, uint8_t to) {
+//    Serial.println(text);
+//    DataPacket packet = createDataPacket(PACKET_TYPE_RESPONSE);
+//    packet.packet.data.response.code = responseCode;
+//
+//    memcpy(packet.packet.data.response.text, text.begin(), sizeof(text));
+//
+//    Serial.println("Sending response");
+//    packet.packet.print();
+//
+//    sendData(packet.bytes, 4 * 1 + 4, to);
+//}
 
 void sendInstruction(int instructionCode, String text, uint8_t to) {
     Serial.println(text);
     DataPacket packet = createDataPacket(PACKET_TYPE_INSTRUCTION);
     packet.packet.data.instruction.code = instructionCode;
-    memcpy(packet.packet.data.response.text, text.begin(), sizeof(text));
+//    memcpy(packet.packet.data.response.text, text.begin(), sizeof(text));
 
     Serial.println("Sending Instruction");
     packet.packet.print();
 
-    sendData(packet.bytes, sizeof(packet.bytes), to);
+    sendData(packet.bytes, 4 * 1 + 4, to);
 }
 
 void setup() {
@@ -277,11 +300,12 @@ void setup() {
             String slaveId = request->arg("slave_id");
             byte id = (byte) slaveId.toInt();
             if (id >= ADDRESS_SLAVE_1 && id < ADDRESS_SLAVE_1 + NUMBER_OF_SLAVES) {
-                const size_t capacity = JSON_OBJECT_SIZE(5);
+                const size_t capacity = JSON_OBJECT_SIZE(6);
                 DynamicJsonDocument doc(capacity);
 
                 Slave &slave = slaves[id - 1];
                 doc["sid"] = id;
+                doc["_s"] = slave.isConnected();
                 doc["at"] = slave.sensor.packet.data.sensor.atmospheric_temperature;
                 doc["ah"] = slave.sensor.packet.data.sensor.humidity;
                 doc["sm"] = slave.sensor.packet.data.sensor.moisture_percent;
@@ -376,7 +400,7 @@ void loop() {
             currentStateSince = millis();
             break;
         case STATE_IDLE_FOR_SENSOR_DATA:
-            if (elapsedTime > 5000) {
+            if (elapsedTime > 500) {
                 state = STATE_SEND_SENSOR_DATA;
                 currentStateSince = millis();
             }
