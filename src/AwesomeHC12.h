@@ -36,6 +36,7 @@ public:
         pinMode(setPin, OUTPUT);
         microBaudWaitPerByte = 2 * (8 * 2 + 1) * (float) 1000000 / (float) baudRate;
         readBuffer = new uint8_t[maxPacketSize];
+        writeBuffer = new uint8_t[maxPacketSize];
         cmdResponse = new char[20];
     }
 
@@ -48,11 +49,13 @@ public:
 
     void send(uint8_t *payload, size_t size);
 
+    void send(uint8_t *payload, size_t size, uint8_t to);
+
     void send(const char *str);
 
-    void read(void (*receivePacket)(uint8_t *buf, size_t size));
+    void read(void (*receivePacket)(uint8_t *buf, size_t size, uint8_t from));
 
-    void read(uint8_t *readBuffer, size_t &len);
+    void read(uint8_t *readBuffer, size_t &len, uint8_t &from);
 
     bool available();
 
@@ -62,6 +65,7 @@ public:
 
     char *cmdResponse;
     uint8_t *readBuffer;
+    uint8_t *writeBuffer;
 };
 
 #endif // AWESOME_HC12_H

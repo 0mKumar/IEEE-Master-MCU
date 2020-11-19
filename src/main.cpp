@@ -1,14 +1,20 @@
 #include <Arduino.h>
 #include <ESP8266WiFi.h>
-#include <RHReliableDatagram.h>
-#include <RH_NRF24.h>
+#include "AwesomeHC12.h"
 
 #include <Hash.h>
 #include <ESPAsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 #include "ArduinoJson.h"
 
+#define HC_TX_PIN 0 // D3
+#define HC_RX_PIN 5 // D1
+#define HC_SET_PIN 2 // D4
+
 #define THIS_ADDRESS 128
+
+AwesomeHC12 HC12(HC_TX_PIN, HC_RX_PIN, HC_SET_PIN, THIS_ADDRESS, 9600, 1, 96);
+
 
 const char *ssid = "ESP8266-Access-Point";
 const char *password = "123456789";
@@ -17,9 +23,7 @@ const char *password = "123456789";
 AsyncWebServer server(80);
 
 int moistureValue = -1;
-RH_NRF24 driver(2, 4);
 
-RHReliableDatagram manager(driver, THIS_ADDRESS);
 
 #define PACKET_TYPE_SENSOR_DATA 1
 #define PACKET_TYPE_MESSAGE 2
@@ -39,17 +43,6 @@ RHReliableDatagram manager(driver, THIS_ADDRESS);
 #define ADDRESS_SLAVE_1 1
 
 unsigned int counter = 0;
-
-void reInitialiseNRF() {
-    if (!manager.init())
-        Serial.println("init failed");
-    if (!driver.setRF(RH_NRF24::DataRate250kbps, RH_NRF24::TransmitPower0dBm)) {
-        Serial.println("rf set failed");
-    }
-    driver.setChannel(96);
-    manager.setRetries(20);
-    manager.setTimeout(200);
-}
 
 #define DATA_PACKET_MAX_LENGTH 20
 
@@ -171,11 +164,16 @@ Slave slaves[NUMBER_OF_SLAVES];
 
 void sendInstruction(int instructionCode, String text, uint8_t to);
 
-void readAndConsumeDataPacket() {
+bool readAndConsumeDataPacket() {
     DataPacket dataPacket{};
-    uint8_t len = sizeof(dataPacket.bytes);
+    size_t len;
     uint8_t from;
-    if (manager.recvfromAckTimeout(dataPacket.bytes, &len, 4000, &from)) {
+    unsigned long time = millis();
+    while (millis() - time < 400 && !HC12.available());
+
+    if (HC12.available()) {
+        HC12.read(dataPacket.bytes, len, from);
+
         Slave &slave = slaves[from - 1];
         slave.lastRespondedAt = millis();
         dataPacket.packet.print();
@@ -212,12 +210,14 @@ void readAndConsumeDataPacket() {
                 }
             }
         }
+        return true;
     } else {
         Serial.println(F("No reply from slave"));
+        return false;
     }
 }
 
-void sendData(uint8_t *bytes, byte length, uint8_t to) {
+void sendData(uint8_t *bytes, size_t length, uint8_t to) {
     Serial.print("Sending data to ");
     Serial.println(to, HEX);
     for (byte i = 0; i < length; i++) {
@@ -226,10 +226,9 @@ void sendData(uint8_t *bytes, byte length, uint8_t to) {
     }
     Serial.println();
     slaves[to - 1].lastCommunicationTryAt = millis();
-    if (manager.sendtoWait(bytes, length, to)) {
-        readAndConsumeDataPacket();
-    } else {
-        Serial.println(F("sendtoWait Failed!!"));
+    HC12.send(bytes, length, to);
+    if (!readAndConsumeDataPacket()) {
+        Serial.println("No response from slave!");
     }
 }
 
@@ -279,7 +278,7 @@ void setup() {
     Serial.begin(9600);
     while (!Serial);
 
-    reInitialiseNRF();
+    HC12.init();
 
     Serial.setDebugOutput(true);
 

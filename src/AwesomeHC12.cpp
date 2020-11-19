@@ -4,13 +4,13 @@
 
 #include "AwesomeHC12.h"
 
-void AwesomeHC12::read(uint8_t *buffer, size_t &len) {
+void AwesomeHC12::read(uint8_t *buffer, size_t &len, uint8_t &from) {
     int readIndex = 0;
     bool overflow = false;
     while (HC12.available()) {
         while (HC12.available()) {
             if (readIndex < maxPacketSize) {
-                buffer[readIndex++] = HC12.read();
+                readBuffer[readIndex++] = HC12.read();
             } else {
                 HC12.read();
                 overflow = true;
@@ -22,13 +22,17 @@ void AwesomeHC12::read(uint8_t *buffer, size_t &len) {
         Serial.println("Read buffer overflow!");
     }
     len = overflow ? maxPacketSize : readIndex;
+    if (len > 0) len -= 1;
+    from = readBuffer[0];
+    memcpy(buffer, readBuffer + 1, len);
 }
 
-void AwesomeHC12::read(void (*receivePacket)(uint8_t *buf, size_t size)) {
+void AwesomeHC12::read(void (*receivePacket)(uint8_t *buf, size_t size, uint8_t from)) {
     size_t len;
-    read(readBuffer, len);
+    uint8_t from;
+    read(readBuffer, len, from);
     if (len > 0) {
-        receivePacket(readBuffer, len);
+        receivePacket(readBuffer, len, from);
         Serial.println(microBaudWaitPerByte);
     }
 }
@@ -71,6 +75,12 @@ void AwesomeHC12::send(uint8_t *payload, size_t size) {
 
 void AwesomeHC12::send(const char *str) {
     send((uint8_t *) str, strlen(str));
+}
+
+void AwesomeHC12::send(uint8_t *payload, size_t size, uint8_t to) {
+    writeBuffer[0] = to;
+    memcpy(writeBuffer + 1, payload, size);
+    send(writeBuffer, size + 1);
 }
 
 bool AwesomeHC12::available() {
