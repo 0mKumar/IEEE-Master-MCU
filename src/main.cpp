@@ -3,10 +3,18 @@
 #include <RHReliableDatagram.h>
 #include <RH_NRF24.h>
 
+#include <Hash.h>
+#include <ESPAsyncTCP.h>
+#include <ESPAsyncWebServer.h>
+#include "ArduinoJson.h"
+
 #define THIS_ADDRESS 128
 
-//const char* ssid = "Om Kumar";
-//const char* password = "ppppuuurrrry";
+const char *ssid = "ESP8266-Access-Point";
+const char *password = "123456789";
+
+// Create AsyncWebServer object on port 80
+AsyncWebServer server(80);
 
 int moistureValue = -1;
 RH_NRF24 driver(2, 4);
@@ -27,26 +35,28 @@ RHReliableDatagram manager(driver, THIS_ADDRESS);
 #define RESPONSE_OPENED_VALVE 5
 #define RESPONSE_CLOSED_VALVE 6
 
+#define NUMBER_OF_SLAVES 3
+#define ADDRESS_SLAVE_1 1
+
 unsigned int counter = 0;
 
 void reInitialiseNRF() {
     if (!manager.init())
         Serial.println("init failed");
-    driver.setChannel(2);
-    manager.setRetries(10);
-    manager.setTimeout(300);
+    if (!driver.setRF(RH_NRF24::DataRate250kbps, RH_NRF24::TransmitPower0dBm)) {
+        Serial.println("rf set failed");
+    }
+    driver.setChannel(96);
+    manager.setRetries(20);
+    manager.setTimeout(200);
 }
 
-struct Slave {
-    uint8_t address;
-    unsigned long lastRespondedAt;
-
-};
+#define DATA_PACKET_MAX_LENGTH 20
 
 union DataPacket {
     struct {
         int packet_type;
-        unsigned int id;
+//        unsigned int id;
         union {
             struct {
                 int moisture_percent;
@@ -70,35 +80,53 @@ union DataPacket {
 
             struct {
                 int code;
-                char text[RH_NRF24_MAX_MESSAGE_LEN - 12];
 
                 void print() {
                     Serial.print(F("Response "));
                     Serial.print(code);
                     Serial.print(F(" | "));
-                    Serial.println(text);
+                    switch (code) {
+                        case RESPONSE_CLOSED_VALVE:
+                            Serial.println(F("RESPONSE_CLOSED_VALVE"));
+                            break;
+                        case RESPONSE_OPENED_VALVE:
+                            Serial.println(F("RESPONSE_OPENED_VALVE"));
+                            break;
+                    }
                 }
             } response;
 
             struct {
                 int code;
-                char text[RH_NRF24_MAX_MESSAGE_LEN - 12];
 
                 void print() {
                     Serial.print(F("Instruction "));
                     Serial.print(code);
                     Serial.print(F(" | "));
-                    Serial.println(text);
+                    switch (code) {
+                        case INSTRUCTION_OPEN_VALVE:
+                            Serial.println(F("INSTRUCTION_OPEN_VALVE"));
+                            break;
+                        case INSTRUCTION_CLOSE_VALVE:
+                            Serial.println(F("INSTRUCTION_CLOSE_VALVE"));
+                            break;
+                        case INSTRUCTION_SEND_SENSOR_DATA:
+                            Serial.println(F("INSTRUCTION_SEND_SENSOR_DATA"));
+                            break;
+                        case INSTRUCTION_PREPARE_SENSOR_DATA:
+                            Serial.println(F("INSTRUCTION_PREPARE_SENSOR_DATA"));
+                            break;
+                    }
                 }
             } instruction;
 
-            char message[RH_NRF24_MAX_MESSAGE_LEN - 8];
+            char message[DATA_PACKET_MAX_LENGTH - 4];
         } data;
 
         void print() {
-            Serial.print("#");
-            Serial.print(id);
-            Serial.print(": ");
+//            Serial.print("#");
+//            Serial.print(id);
+//            Serial.print(": ");
             switch (packet_type) {
                 case PACKET_TYPE_SENSOR_DATA:
                     data.sensor.print();
@@ -120,8 +148,26 @@ union DataPacket {
         }
     } packet;
 
-    byte bytes[RH_NRF24_MAX_MESSAGE_LEN];
+    byte bytes[DATA_PACKET_MAX_LENGTH];
 };
+
+#define VALVE_STATE_UNKNOWN 0
+#define VALVE_STATE_OPEN 2
+#define VALVE_STATE_CLOSE 3
+
+struct Slave {
+    uint8_t address{};
+    unsigned long lastRespondedAt = 0;
+    unsigned long lastCommunicationTryAt = 0;
+    DataPacket sensor{};
+    uint8_t valveState = VALVE_STATE_UNKNOWN;
+
+    bool isConnected() const {
+        return lastRespondedAt - lastCommunicationTryAt < 4000;
+    }
+};
+
+Slave slaves[NUMBER_OF_SLAVES];
 
 void sendInstruction(int instructionCode, String text, uint8_t to);
 
@@ -130,6 +176,8 @@ void readAndConsumeDataPacket() {
     uint8_t len = sizeof(dataPacket.bytes);
     uint8_t from;
     if (manager.recvfromAckTimeout(dataPacket.bytes, &len, 4000, &from)) {
+        Slave &slave = slaves[from - 1];
+        slave.lastRespondedAt = millis();
         dataPacket.packet.print();
         for (int i = 0; i < len; i++) {
             Serial.print(dataPacket.bytes[i], HEX);
@@ -153,6 +201,8 @@ void readAndConsumeDataPacket() {
                 break;
             }
             case PACKET_TYPE_SENSOR_DATA: {
+                memcpy(slave.sensor.bytes, dataPacket.bytes, sizeof(dataPacket.bytes));
+                slave.address = from;
 //                dataPacket.packet.data.sensor.print();
                 moistureValue = dataPacket.packet.data.sensor.moisture_percent;
                 if (moistureValue < 80) {
@@ -175,53 +225,54 @@ void sendData(uint8_t *bytes, byte length, uint8_t to) {
         Serial.print(" ");
     }
     Serial.println();
+    slaves[to - 1].lastCommunicationTryAt = millis();
     if (manager.sendtoWait(bytes, length, to)) {
         readAndConsumeDataPacket();
-    }else{
+    } else {
         Serial.println(F("sendtoWait Failed!!"));
     }
 }
 
 DataPacket createDataPacket(int type) {
     DataPacket packet{{type}};
-    packet.packet.id = counter++;
+//    packet.packet.id = counter++;
     return packet;
 }
 
-void sendMessage(String text, uint8_t to) {
-    Serial.println(text);
-    DataPacket packet = createDataPacket(PACKET_TYPE_MESSAGE);
-    memcpy(packet.packet.data.message, text.begin(), sizeof(text));
+//void sendMessage(String text, uint8_t to) {
+//    Serial.println(text);
+//    DataPacket packet = createDataPacket(PACKET_TYPE_MESSAGE);
+//    memcpy(packet.packet.data.message, text.begin(), sizeof(text));
+//
+//    Serial.println("Sending message");
+//    packet.packet.print();
+//
+//    sendData(packet.bytes, sizeof(packet.bytes), to);
+//}
 
-    Serial.println("Sending message");
-    packet.packet.print();
-
-    sendData(packet.bytes, sizeof(packet.bytes), to);
-}
-
-void sendResponse(int responseCode, String text, uint8_t to) {
-    Serial.println(text);
-    DataPacket packet = createDataPacket(PACKET_TYPE_RESPONSE);
-    packet.packet.data.response.code = responseCode;
-
-    memcpy(packet.packet.data.response.text, text.begin(), sizeof(text));
-
-    Serial.println("Sending response");
-    packet.packet.print();
-
-    sendData(packet.bytes, sizeof(packet.bytes), to);
-}
+//void sendResponse(int responseCode, String text, uint8_t to) {
+//    Serial.println(text);
+//    DataPacket packet = createDataPacket(PACKET_TYPE_RESPONSE);
+//    packet.packet.data.response.code = responseCode;
+//
+//    memcpy(packet.packet.data.response.text, text.begin(), sizeof(text));
+//
+//    Serial.println("Sending response");
+//    packet.packet.print();
+//
+//    sendData(packet.bytes, 4 * 1 + 4, to);
+//}
 
 void sendInstruction(int instructionCode, String text, uint8_t to) {
     Serial.println(text);
     DataPacket packet = createDataPacket(PACKET_TYPE_INSTRUCTION);
     packet.packet.data.instruction.code = instructionCode;
-    memcpy(packet.packet.data.response.text, text.begin(), sizeof(text));
+//    memcpy(packet.packet.data.response.text, text.begin(), sizeof(text));
 
     Serial.println("Sending Instruction");
     packet.packet.print();
 
-    sendData(packet.bytes, sizeof(packet.bytes), to);
+    sendData(packet.bytes, 4 * 1 + 4, to);
 }
 
 void setup() {
@@ -232,15 +283,101 @@ void setup() {
 
     Serial.setDebugOutput(true);
 
-    WiFi.mode(WIFI_OFF);
-//
-//  WiFi.mode(WIFI_STA);
-//  WiFi.begin(ssid, password);
-//  Serial.println("\nConnecting to WiFi");
-//  while (WiFi.status() != WL_CONNECTED) {
-//    Serial.print(".");
-//    delay(1000);
-//  }
+    WiFi.softAP(ssid, password);
+    IPAddress IP = WiFi.softAPIP();
+    Serial.print("AP IP address: ");
+    Serial.println(IP);
+
+    // Print ESP8266 Local IP Address
+    Serial.println(WiFi.localIP());
+
+    server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
+        request->send_P(200, "text/plain", "Hello from master!");
+    });
+
+    server.on("/slave_sensor", HTTP_POST, [](AsyncWebServerRequest *request) {
+        if (request->hasArg("slave_id")) {
+            String slaveId = request->arg("slave_id");
+            byte id = (byte) slaveId.toInt();
+            if (id >= ADDRESS_SLAVE_1 && id < ADDRESS_SLAVE_1 + NUMBER_OF_SLAVES) {
+                const size_t capacity = JSON_OBJECT_SIZE(6);
+                DynamicJsonDocument doc(capacity);
+
+                Slave &slave = slaves[id - 1];
+                doc["sid"] = id;
+                doc["_s"] = slave.isConnected();
+                doc["at"] = slave.sensor.packet.data.sensor.atmospheric_temperature;
+                doc["ah"] = slave.sensor.packet.data.sensor.humidity;
+                doc["sm"] = slave.sensor.packet.data.sensor.moisture_percent;
+                doc["st"] = slave.sensor.packet.data.sensor.soil_temperature;
+
+                char buffer[256];
+                serializeJson(doc, buffer);
+                request->send_P(200, "application/json", buffer);
+            } else {
+                request->send_P(300, "application/json", "bad request: slave with given slave_id does not exist");
+            }
+        } else {
+            request->send_P(300, "application/json", "bad request: slave id not provided");
+        }
+    });
+
+    server.on("/valve", HTTP_POST, [](AsyncWebServerRequest *request) {
+        if (request->hasArg("slave_id") && request->hasArg("new_state")) {
+            String slaveId = request->arg("slave_id");
+            String newValveState = request->arg("new_state");
+            byte id = (byte) slaveId.toInt();
+            if (id >= ADDRESS_SLAVE_1 && id < ADDRESS_SLAVE_1 + NUMBER_OF_SLAVES) {
+
+                if (newValveState == "open") {
+                    sendInstruction(INSTRUCTION_OPEN_VALVE, "App request open", id);
+                } else if (newValveState == "close") {
+                    sendInstruction(INSTRUCTION_CLOSE_VALVE, "App request close", id);
+                }
+
+                const size_t capacity = JSON_OBJECT_SIZE(2);
+                DynamicJsonDocument doc(capacity);
+
+                doc["sid"] = id;
+                doc["ac"] = "OK";
+
+                char buffer[256];
+                serializeJson(doc, buffer);
+                request->send_P(200, "application/json", buffer);
+            } else {
+                request->send_P(300, "text/plain", "bad request: slave with given slave_id does not exist");
+            }
+        } else {
+            request->send_P(300, "text/plain", "bad request: slave_id or new_state not provided");
+        }
+    });
+
+    server.on("/motor", HTTP_POST, [](AsyncWebServerRequest *request) {
+        if (request->hasArg("power")) {
+            String power = request->arg("power");
+
+            if (power == "on") {
+
+            } else if (power == "off") {
+
+            }
+
+            const size_t capacity = JSON_OBJECT_SIZE(1);
+            DynamicJsonDocument doc(capacity);
+
+            doc["ac"] = "OK";
+
+            char buffer[256];
+            serializeJson(doc, buffer);
+            request->send_P(200, "application/json", buffer);
+
+        } else {
+            request->send_P(300, "text/plain", "bad request: slave_id or new_state not provided");
+        }
+    });
+
+    // Start server
+    server.begin();
 }
 
 unsigned long currentStateSince = millis();
@@ -251,9 +388,6 @@ unsigned long elapsedTime;
 #define STATE_SEND_SENSOR_DATA 3
 
 int state = STATE_PREPARE_SENSOR_DATA;
-
-#define NUMBER_OF_SLAVES 3
-#define ADDRESS_SLAVE_1 1
 
 void loop() {
     elapsedTime = millis() - currentStateSince;
@@ -266,7 +400,7 @@ void loop() {
             currentStateSince = millis();
             break;
         case STATE_IDLE_FOR_SENSOR_DATA:
-            if (elapsedTime > 5000) {
+            if (elapsedTime > 500) {
                 state = STATE_SEND_SENSOR_DATA;
                 currentStateSince = millis();
             }
@@ -279,5 +413,4 @@ void loop() {
             currentStateSince = millis();
             break;
     }
-    delay(100);
 }
