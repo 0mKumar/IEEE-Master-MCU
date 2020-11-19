@@ -55,7 +55,7 @@ public:
 
     void read(void (*receivePacket)(uint8_t *buf, size_t size, uint8_t from));
 
-    void read(uint8_t *readBuffer, size_t &len, uint8_t &from);
+    bool read(uint8_t *readBuffer, size_t &len, uint8_t &from);
 
     bool available();
 

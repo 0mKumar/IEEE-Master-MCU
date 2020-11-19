@@ -4,7 +4,7 @@
 
 #include "AwesomeHC12.h"
 
-void AwesomeHC12::read(uint8_t *buffer, size_t &len, uint8_t &from) {
+bool AwesomeHC12::read(uint8_t *buffer, size_t &len, uint8_t &from) {
     int readIndex = 0;
     bool overflow = false;
     while (HC12.available()) {
@@ -22,9 +22,15 @@ void AwesomeHC12::read(uint8_t *buffer, size_t &len, uint8_t &from) {
         Serial.println("Read buffer overflow!");
     }
     len = overflow ? maxPacketSize : readIndex;
-    if (len > 0) len -= 1;
+    if (len >= 2) len -= 2;
     from = readBuffer[0];
-    memcpy(buffer, readBuffer + 1, len);
+    uint8_t to = readBuffer[1];
+    if (to == address) {
+        memcpy(buffer, readBuffer + 2, len);
+        return true;
+    }
+    len = 0;
+    return false;
 }
 
 void AwesomeHC12::read(void (*receivePacket)(uint8_t *buf, size_t size, uint8_t from)) {
@@ -78,9 +84,10 @@ void AwesomeHC12::send(const char *str) {
 }
 
 void AwesomeHC12::send(uint8_t *payload, size_t size, uint8_t to) {
-    writeBuffer[0] = to;
-    memcpy(writeBuffer + 1, payload, size);
-    send(writeBuffer, size + 1);
+    writeBuffer[0] = address;
+    writeBuffer[1] = to;
+    memcpy(writeBuffer + 2, payload, size);
+    send(writeBuffer, size + 2);
 }
 
 bool AwesomeHC12::available() {

@@ -44,7 +44,7 @@ int moistureValue = -1;
 
 unsigned int counter = 0;
 
-#define DATA_PACKET_MAX_LENGTH 20
+#define DATA_PACKET_MAX_LENGTH 32
 
 union DataPacket {
     struct {
@@ -156,7 +156,8 @@ struct Slave {
     uint8_t valveState = VALVE_STATE_UNKNOWN;
 
     bool isConnected() const {
-        return lastRespondedAt - lastCommunicationTryAt < 4000;
+        long diff = lastRespondedAt - lastCommunicationTryAt;
+        return diff != 0 && diff > -10000;
     }
 };
 
@@ -169,10 +170,12 @@ bool readAndConsumeDataPacket() {
     size_t len;
     uint8_t from;
     unsigned long time = millis();
-    while (millis() - time < 400 && !HC12.available());
+    while (millis() - time < 1000 && !HC12.available());
 
     if (HC12.available()) {
-        HC12.read(dataPacket.bytes, len, from);
+        if (!HC12.read(dataPacket.bytes, len, from)) {
+            return false;
+        }
 
         Slave &slave = slaves[from - 1];
         slave.lastRespondedAt = millis();
