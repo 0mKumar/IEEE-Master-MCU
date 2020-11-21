@@ -7,11 +7,20 @@
 #include <ESPAsyncWebServer.h>
 #include "ArduinoJson.h"
 
-#define HC_TX_PIN 0 // D3
-#define HC_RX_PIN 5 // D1
-#define HC_SET_PIN 2 // D4
+#define D5 14
+#define D3 0
+#define D1 5
+#define D4 2
+
+#define HC_TX_PIN D3
+#define HC_RX_PIN D1
+#define HC_SET_PIN D4
+
+#define MOTOR_PIN D5
 
 #define THIS_ADDRESS 128
+
+#define THRESHOLD_MOISTURE 50
 
 AwesomeHC12 HC12(HC_TX_PIN, HC_RX_PIN, HC_SET_PIN, THIS_ADDRESS, 9600, 1, 96);
 
@@ -192,9 +201,11 @@ bool readAndConsumeDataPacket() {
                 switch (dataPacket.packet.data.response.code) {
                     case RESPONSE_CLOSED_VALVE:
                         moistureValue = -1;
+                        slave.valveState = VALVE_STATE_CLOSE;
                         break;
                     case RESPONSE_OPENED_VALVE:
                         moistureValue = -1;
+                        slave.valveState = VALVE_STATE_OPEN;
                         break;
                     default:
                         Serial.println("Unknown response received");
@@ -206,7 +217,7 @@ bool readAndConsumeDataPacket() {
                 slave.address = from;
 //                dataPacket.packet.data.sensor.print();
                 moistureValue = dataPacket.packet.data.sensor.moisture_percent;
-                if (moistureValue < 80) {
+                if (moistureValue < THRESHOLD_MOISTURE) {
                     sendInstruction(INSTRUCTION_OPEN_VALVE, "Open the valve", from);
                 } else {
                     sendInstruction(INSTRUCTION_CLOSE_VALVE, "Close the valve", from);
@@ -284,6 +295,9 @@ void setup() {
     HC12.init();
 
     Serial.setDebugOutput(true);
+
+    pinMode(MOTOR_PIN, OUTPUT);
+    digitalWrite(MOTOR_PIN, LOW);
 
     WiFi.softAP(ssid, password);
     IPAddress IP = WiFi.softAPIP();
@@ -388,6 +402,7 @@ unsigned long elapsedTime;
 #define STATE_PREPARE_SENSOR_DATA 1
 #define STATE_IDLE_FOR_SENSOR_DATA 2
 #define STATE_SEND_SENSOR_DATA 3
+#define STATE_OPERATE_MOTOR 4
 
 int state = STATE_PREPARE_SENSOR_DATA;
 
@@ -410,6 +425,23 @@ void loop() {
         case STATE_SEND_SENSOR_DATA:
             for (int to = ADDRESS_SLAVE_1; to <= NUMBER_OF_SLAVES; to++) {
                 sendInstruction(INSTRUCTION_SEND_SENSOR_DATA, "Send sensor data", to);
+            }
+            state = STATE_OPERATE_MOTOR;
+            currentStateSince = millis();
+            break;
+        case STATE_OPERATE_MOTOR:
+            int openValveCount = 0;
+            for (auto slave: slaves) {
+                if (slave.isConnected() && slave.valveState == VALVE_STATE_OPEN) {
+                    openValveCount++;
+                }
+            }
+            if (openValveCount > 0) {
+                digitalWrite(MOTOR_PIN, HIGH);
+                Serial.println(F("MOTOR ON"));
+            } else {
+                digitalWrite(MOTOR_PIN, LOW);
+                Serial.println(F("MOTOR OFF"));
             }
             state = STATE_PREPARE_SENSOR_DATA;
             currentStateSince = millis();
