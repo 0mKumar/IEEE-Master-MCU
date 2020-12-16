@@ -168,6 +168,9 @@ struct Slave {
         long diff = lastRespondedAt - lastCommunicationTryAt;
         return diff != 0 && diff > -10000;
     }
+
+    int moistureThresholdMax = THRESHOLD_MOISTURE;
+    int moistureThresholdMin = THRESHOLD_MOISTURE;
 };
 
 Slave slaves[NUMBER_OF_SLAVES];
@@ -217,9 +220,9 @@ bool readAndConsumeDataPacket() {
                 slave.address = from;
 //                dataPacket.packet.data.sensor.print();
                 moistureValue = dataPacket.packet.data.sensor.moisture_percent;
-                if (moistureValue < THRESHOLD_MOISTURE) {
+                if (moistureValue < slave.moistureThresholdMin) {
                     sendInstruction(INSTRUCTION_OPEN_VALVE, "Open the valve", from);
-                } else {
+                } else if (moistureValue >= slave.moistureThresholdMax) {
                     sendInstruction(INSTRUCTION_CLOSE_VALVE, "Close the valve", from);
                 }
             }
@@ -389,6 +392,39 @@ void setup() {
 
         } else {
             request->send_P(300, "text/plain", "bad request: slave_id or new_state not provided");
+        }
+    });
+
+    server.on("/moisture_threshold", HTTP_POST, [](AsyncWebServerRequest *request) {
+        if (request->hasArg("slave_id")) {
+            String slaveId = request->arg("slave_id");
+            int id = (int) slaveId.toInt();
+
+            if (id >= ADDRESS_SLAVE_1 && id < ADDRESS_SLAVE_1 + NUMBER_OF_SLAVES) {
+                Slave &slave = slaves[id - 1];
+                if (request->hasArg("min")) {
+                    int min = (int) request->arg("min").toInt();
+                    slave.moistureThresholdMin = min;
+                }
+                if (request->hasArg("max")) {
+                    int max = (int) request->arg("max").toInt();
+                    slave.moistureThresholdMax = max;
+                }
+                const size_t capacity = JSON_OBJECT_SIZE(3);
+                DynamicJsonDocument doc(capacity);
+
+                doc["ac"] = "OK";
+                doc["min"] = slave.moistureThresholdMin;
+                doc["max"] = slave.moistureThresholdMax;
+
+                char buffer[256];
+                serializeJson(doc, buffer);
+                request->send_P(200, "application/json", buffer);
+            } else {
+                request->send_P(300, "text/plain", "bad request: slave with given slave_id does not exist");
+            }
+        } else {
+            request->send_P(300, "text/plain", "bad request: slave_id or min or max not provided");
         }
     });
 
