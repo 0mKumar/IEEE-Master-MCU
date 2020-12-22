@@ -24,6 +24,7 @@
 
 AwesomeHC12 HC12(HC_TX_PIN, HC_RX_PIN, HC_SET_PIN, THIS_ADDRESS, 9600, 1, 96);
 
+bool motorEnabled = true;
 
 const char *ssid = "ESP8266-Access-Point";
 const char *password = "123456789";
@@ -48,7 +49,7 @@ int moistureValue = -1;
 #define RESPONSE_OPENED_VALVE 5
 #define RESPONSE_CLOSED_VALVE 6
 
-#define NUMBER_OF_SLAVES 3
+#define NUMBER_OF_SLAVES 4
 #define ADDRESS_SLAVE_1 1
 
 unsigned int counter = 0;
@@ -376,9 +377,10 @@ void setup() {
             String power = request->arg("power");
 
             if (power == "on") {
-
+                motorEnabled = true;
             } else if (power == "off") {
-
+                motorEnabled = false;
+                digitalWrite(MOTOR_PIN, LOW);
             }
 
             const size_t capacity = JSON_OBJECT_SIZE(1);
@@ -410,10 +412,9 @@ void setup() {
                     int max = (int) request->arg("max").toInt();
                     slave.moistureThresholdMax = max;
                 }
-                const size_t capacity = JSON_OBJECT_SIZE(3);
+                const size_t capacity = JSON_OBJECT_SIZE(2);
                 DynamicJsonDocument doc(capacity);
 
-                doc["ac"] = "OK";
                 doc["min"] = slave.moistureThresholdMin;
                 doc["max"] = slave.moistureThresholdMax;
 
@@ -472,12 +473,16 @@ void loop() {
                     openValveCount++;
                 }
             }
-            if (openValveCount > 0) {
-                digitalWrite(MOTOR_PIN, HIGH);
-                Serial.println(F("MOTOR ON"));
+            if (motorEnabled) {
+                if (openValveCount > 0) {
+                    digitalWrite(MOTOR_PIN, HIGH);
+                    Serial.println(F("MOTOR ON"));
+                } else {
+                    digitalWrite(MOTOR_PIN, LOW);
+                    Serial.println(F("MOTOR OFF"));
+                }
             } else {
                 digitalWrite(MOTOR_PIN, LOW);
-                Serial.println(F("MOTOR OFF"));
             }
             state = STATE_PREPARE_SENSOR_DATA;
             currentStateSince = millis();
